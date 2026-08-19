@@ -1,6 +1,10 @@
 (() => {
   "use strict";
 
+  const SCRIPT_GUARD = "__airbet88_loggedin_popup_v4_loaded__";
+  if (window[SCRIPT_GUARD]) return;
+  window[SCRIPT_GUARD] = true;
+
   const STYLE_ID = "airbet88-loggedin-popup-v3-style";
   const POPUP_ID = "airbet88-loggedin-popup-v3";
   const OVERLAY_ID = "airbet88-loggedin-overlay-v3";
@@ -26,6 +30,35 @@
     6 * 60 * 60 * 1000;
 
   let popupCreated = false;
+  let popupInitTimer = null;
+  let infoTabTimer = null;
+  let previousHtmlOverflow = null;
+  let previousBodyOverflow = null;
+
+  function storageGet(storage, key) {
+    try {
+      return storage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function storageSet(storage, key, value) {
+    try {
+      storage.setItem(key, value);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function storageRemove(storage, key) {
+    try {
+      storage.removeItem(key);
+    } catch (error) {
+      // Storage may be blocked by the browser.
+    }
+  }
 
   function normalizePath() {
     return window.location.pathname
@@ -49,7 +82,7 @@
     if (!isLoggedInPage()) return false;
 
     const lastClosed = Number(
-      localStorage.getItem(DELAY_KEY) || 0
+      storageGet(localStorage, DELAY_KEY) || 0
     );
 
     if (!lastClosed) return true;
@@ -461,18 +494,40 @@
   }
 
   function rememberClosed() {
-    localStorage.setItem(
+    storageSet(
+      localStorage,
       DELAY_KEY,
       String(Date.now())
     );
   }
 
-  function restoreScroll() {
-    document.documentElement
-      .style.overflow = "";
+  function lockScroll() {
+    if (previousHtmlOverflow === null) {
+      previousHtmlOverflow =
+        document.documentElement.style.overflow;
+    }
 
-    document.body
-      .style.overflow = "";
+    if (previousBodyOverflow === null) {
+      previousBodyOverflow =
+        document.body.style.overflow;
+    }
+
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+  }
+
+  function restoreScroll() {
+    if (previousHtmlOverflow !== null) {
+      document.documentElement.style.overflow =
+        previousHtmlOverflow;
+      previousHtmlOverflow = null;
+    }
+
+    if (previousBodyOverflow !== null) {
+      document.body.style.overflow =
+        previousBodyOverflow;
+      previousBodyOverflow = null;
+    }
   }
 
   function closePopup(
@@ -523,7 +578,8 @@
   }
 
   function goToAnnouncementInfo() {
-    sessionStorage.setItem(
+    storageSet(
+      sessionStorage,
       OPEN_INFO_KEY,
       "1"
     );
@@ -615,11 +671,7 @@
       popup
     );
 
-    document.documentElement
-      .style.overflow = "hidden";
-
-    document.body
-      .style.overflow = "hidden";
+    lockScroll();
 
     document
       .getElementById(CLOSE_ID)
@@ -644,17 +696,23 @@
     }
 
     if (
-      sessionStorage.getItem(
+      storageGet(
+        sessionStorage,
         OPEN_INFO_KEY
       ) !== "1"
     ) {
       return;
     }
 
+    if (infoTabTimer) {
+      clearInterval(infoTabTimer);
+      infoTabTimer = null;
+    }
+
     let attempts = 0;
     const maxAttempts = 60;
 
-    const timer =
+    infoTabTimer =
       window.setInterval(() => {
         attempts++;
 
@@ -664,9 +722,11 @@
           );
 
         if (infoTab) {
-          clearInterval(timer);
+          clearInterval(infoTabTimer);
+          infoTabTimer = null;
 
-          sessionStorage.removeItem(
+          storageRemove(
+            sessionStorage,
             OPEN_INFO_KEY
           );
 
@@ -681,11 +741,9 @@
           return;
         }
 
-        if (
-          attempts >=
-          maxAttempts
-        ) {
-          clearInterval(timer);
+        if (attempts >= maxAttempts) {
+          clearInterval(infoTabTimer);
+          infoTabTimer = null;
         }
       }, 250);
   }
@@ -695,22 +753,94 @@
       return;
     }
 
+    if (
+      popupCreated ||
+      document.getElementById(POPUP_ID)
+    ) {
+      popupCreated = true;
+      return;
+    }
+
+    if (popupInitTimer) {
+      clearInterval(popupInitTimer);
+      popupInitTimer = null;
+    }
+
     let retries = 0;
 
-    const timer =
-      window.setInterval(() => {
-        retries++;
+    const tryCreate = () => {
+      retries++;
 
-        const success =
-          createPopup();
+      const success = createPopup();
 
-        if (
-          success ||
-          retries >= 40
-        ) {
-          clearInterval(timer);
+      if (
+        success ||
+        retries >= 40
+      ) {
+        if (popupInitTimer) {
+          clearInterval(popupInitTimer);
+          popupInitTimer = null;
         }
-      }, 500);
+      }
+    };
+
+    // Try immediately, then retry for dynamic/SPA pages.
+    tryCreate();
+
+    if (!popupCreated && retries < 40) {
+      popupInitTimer =
+        window.setInterval(
+          tryCreate,
+          500
+        );
+    }
+  }
+
+  function handleRouteChange() {
+    window.setTimeout(() => {
+      openAnnouncementInfoTab();
+      initLoggedInPopup();
+    }, 60);
+  }
+
+  function observeSpaNavigation() {
+    const originalPushState =
+      history.pushState;
+
+    const originalReplaceState =
+      history.replaceState;
+
+    history.pushState = function (...args) {
+      const result =
+        originalPushState.apply(
+          this,
+          args
+        );
+
+      handleRouteChange();
+      return result;
+    };
+
+    history.replaceState = function (...args) {
+      const result =
+        originalReplaceState.apply(
+          this,
+          args
+        );
+
+      handleRouteChange();
+      return result;
+    };
+
+    window.addEventListener(
+      "popstate",
+      handleRouteChange
+    );
+
+    window.addEventListener(
+      "hashchange",
+      handleRouteChange
+    );
   }
 
   function handleEscape(event) {
@@ -730,11 +860,49 @@
   function init() {
     openAnnouncementInfoTab();
     initLoggedInPopup();
+    observeSpaNavigation();
 
     document.addEventListener(
       "keydown",
       handleEscape
     );
+
+    // Helper untuk testing dari browser console.
+    window.AIRBET88Popup = {
+      resetDelay() {
+        storageRemove(
+          localStorage,
+          DELAY_KEY
+        );
+        return true;
+      },
+
+      showNow() {
+        storageRemove(
+          localStorage,
+          DELAY_KEY
+        );
+
+        if (!isLoggedInPage()) {
+          return false;
+        }
+
+        if (
+          document.getElementById(
+            POPUP_ID
+          )
+        ) {
+          return true;
+        }
+
+        popupCreated = false;
+        return createPopup();
+      },
+
+      close() {
+        closePopup(false);
+      }
+    };
   }
 
   if (
